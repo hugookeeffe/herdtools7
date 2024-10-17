@@ -572,6 +572,8 @@ let patch_edges n =
   exception FailMerge
 
   let merge2 a1 a2 = match a1,a2 with
+  | (None,Some a)
+  | (Some a,None) when E.is_ifetch (Some a) -> raise FailMerge
   | (None,a)|(a,None) -> a
   | Some a1,Some a2 ->
       match E.merge_atoms a1 a2 with
@@ -706,10 +708,9 @@ let remove_store n0 =
 (***************************)
 (* Set locations of events *)
 (***************************)
-
-  let is_read_same_nonfetch m =
+  let is_read_same_fetch m =
     let check n = (n != m && (loc_compare n.evt.loc  m.evt.loc) = 0 && n.evt.dir = Some R &&
-                  not (E.is_ifetch n.edge.E.a1)) in
+                  (E.is_ifetch n.edge.E.a1)) in
     try ignore (find_node_prev (fun n -> check n) m); true
     with Not_found -> false
 
@@ -717,16 +718,15 @@ let remove_store n0 =
     let rec do_rec m =
       (* ensure Instr read is followed or preceded by plain read to same location*)
       begin match m.evt.loc, m.evt.dir with
-        | Code.Code _, Some R when not (E.is_ifetch m.edge.E.a1) ->
-            if is_read_same_nonfetch m then begin
-              Printf.printf "%s" (str_node m);
+        | Code.Code _, Some R when (E.is_ifetch m.edge.E.a1) ->
+            if is_read_same_fetch m then begin
               Warn.user_error "Multiple ifetch reads to same code location"
               end;
-        | Code.Code _, Some R when E.is_ifetch m.edge.E.a1 ->
-            if not (is_read_same_nonfetch m) then begin
+        | Code.Code _, Some R when not (E.is_ifetch m.edge.E.a1) ->
+            if not (is_read_same_fetch m) then begin
              Warn.user_error "Reading from label that doesn't exist [%s]" (str_node m)
             end;
-        | Code.Code _, Some W when not (E.is_ifetch m.edge.E.a1) ->
+        | Code.Code _, Some W when (E.is_ifetch m.edge.E.a1) ->
           Warn.user_error "Writing non-instruction value to code location: [%s]" (str_node m)
         | _ -> ();
         end;
@@ -742,10 +742,12 @@ let set_diff_loc st n0 =
       end
     else
       let n1 = try
-        (* check if new location needs to be ifetch *)
         find_node
           (fun n -> (if not (same_loc n.prev.edge) then raise Not_found); E.is_ifetch n.edge.E.a1 ) m.next
-        with Not_found -> m in
+        with Not_found -> try
+          find_node_prev
+            (fun n -> (if not (same_loc n.edge) then raise Not_found); E.is_ifetch n.edge.E.a2 ) m.prev
+        with Not_found ->  m in
       next_loc n1.edge st in
     m.evt <- { m.evt with loc=loc ; bank=E.atom_to_bank m.evt.atom; } ;
 (*    eprintf "LOC SET: %a [p=%a]\n%!" debug_node m debug_node p; *)
@@ -852,7 +854,8 @@ let set_same_loc st n0 =
             | Data _ ->
                 let bank = n.evt.bank in
                 begin match bank with
-                | Ord | Instr ->
+                | Instr -> Warn.fatal "instruction annotation to data bank not possible?"
+                | Ord ->
                    let st = set_write_val_ord st n in
                    do_set_write_val next_x_ok st pte_val ns
                 | Pair ->
@@ -907,8 +910,9 @@ let set_same_loc st n0 =
                 end
             | Code _ ->
               let bank = n.evt.bank in
-                begin match bank with
-              | Instr ->
+              begin match bank with
+              | Instr -> Warn.fatal "not letting instr write happen"
+              | Ord ->
                   let st = CoSt.next_co st bank in
                   let v = CoSt.get_co st bank in
                   n.evt <- { n.evt with ins = v;} ;
@@ -1017,7 +1021,7 @@ let do_set_read_v =
         begin match n.evt.dir with
         | Some R ->
             begin match bank with
-            | Ord ->
+            | Ord | Instr->
                set_read_v n cell
             | Pair ->
                set_read_pair_v n cell
@@ -1029,8 +1033,6 @@ let do_set_read_v =
                 n.evt <- { n.evt with v = CoSt.get_co st bank; }
             | Pte ->
                 n.evt <- { n.evt with pte = pte_cell; }
-            | Instr ->
-                n.evt <- { n.evt with ins = CoSt.get_co st bank; }
             end ;
             do_rec st cell pte_cell ns
         | Some W ->
@@ -1038,9 +1040,9 @@ let do_set_read_v =
               match bank with
               | Tag|CapaTag|CapaSeal ->
                  CoSt.set_co st bank n.evt.v
-              |Instr -> CoSt.set_co st bank n.evt.ins
-              | Pte|Ord|Pair|VecReg _ ->
-                 st in
+              | Pte|Ord|Pair|VecReg _| Instr ->
+                if Code.is_data n.evt.loc then st
+                else CoSt.set_co st bank n.evt.ins in
             do_rec st
               (match bank with
                | Ord|Pair|VecReg _ ->
@@ -1122,6 +1124,7 @@ let finish n =
             (fun (loc,(v,_pte)) -> sprintf "%s -> 0x%x"
                 (Code.pp_loc loc) v) vs))
   end ;
+  
   if O.variant Variant_gen.Self then check_fetch n;
   initvals
 
@@ -1149,6 +1152,7 @@ let resolve_edges = function
       extract_edges c,c
 
 let make es =
+  List.iter (fun a -> Printf.printf "%s\n" (E.pp_edge a)) es;
   let es,c = resolve_edges es in
   let initvals = finish c in
   es,c,initvals

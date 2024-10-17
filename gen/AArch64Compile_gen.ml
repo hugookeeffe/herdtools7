@@ -1226,16 +1226,18 @@ module Make(Cfg:Config) : XXXCompile_gen.S =
     let emit_access  st p init e = match e.C.dir,e.C.loc with
     | None,_ -> Warn.fatal "AArchCompile.emit_access"
     | Some d,Code lab ->
-        begin match d,e.C.atom with
-        | R,None ->
+      begin match d,e.C.atom with
+        | R,Some (Instr, None) ->
             let r,init,cs,st = LDR.emit_fetch st p init lab in
             Some r,init,cs,st
-        | W,(None | Some (Instr, None)) ->
-            let init,cs,st = STR.emit_store_nop st p init lab in
-            None,init,cs,st
-        | R, Some (Instr, None) ->
+        (* reading from instruction label currently not supported 
+        | R, None ->
             let r,init,cs,st = LDR.emit_load st p init lab in
             Some r,init,cs,st
+        | W, Some(Instr, None)  *)
+        | W, None ->
+            let init,cs,st = STR.emit_store_nop st p init lab in
+            None,init,cs,st
         | _,_ -> Warn.fatal "Not Yet (%s,%s)!!!"
               (pp_dir d) (C.debug_evt e)
         end

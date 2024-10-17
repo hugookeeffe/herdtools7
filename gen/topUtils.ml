@@ -265,7 +265,7 @@ module Make : functor (O:Config) -> functor (C:ArchRun.S) ->
         k in
       do_rec n0
 
-(* Worth inserting local check *)
+(* Worth ing local check *)
     let find_next_pte_write n =
       let loc = n.C.C.evt.C.C.loc  in
       try
